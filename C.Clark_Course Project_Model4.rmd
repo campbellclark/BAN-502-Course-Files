@@ -1,0 +1,288 @@
+### Course Project
+
+## Clark, Christopher 
+
+# BAN 502
+
+```{r, include = FALSE}
+library(tidyverse)
+library(tidymodels)
+library(caret)
+library(mice)
+library(VIM)
+library(ranger)
+library(randomForest)
+library(RColorBrewer)
+library(rpart)
+library(rattle)
+library(e1071)
+library(xgboost)
+library(usemodels)
+library(mice)
+library(VIM)
+library(naniar)
+library(skimr)
+library(UpSetR)
+library(GGally)
+library(lmtest)
+library(glmnet) 
+library(GGally)
+library(ggcorrplot)
+library(MASS) 
+library(leaps) 
+library(lmtest) 
+library(splines) 
+library(car)
+library(gridExtra)
+library(polycor)
+library(vip)
+library(nnet) #our neural network package
+library(stacks)
+```
+
+
+**Loading the data**  
+```{r}
+ames_student <- read_csv("ames_student.csv")
+housing <- ames_student %>% mutate_if(is.character, as_factor)
+
+housing <- housing %>% dplyr::select(-Utilities, -Roof_Matl, -Electrical, -Misc_Feature, -MS_Zoning, -Street, -Alley, -Lot_Shape, -Land_Contour, -Land_Slope, -Central_Air, -Garage_Qual, -Pool_QC, -Condition_1, -Condition_2, -Bldg_Type, -Overall_Cond, -Roof_Style, -Exterior_1st, -Garage_Cond, -Paved_Drive, -Sale_Type, -Mas_Vnr_Type, -Exter_Cond, -Foundation, -Bsmt_Cond, -Bsmt_Exposure, -BsmtFin_Type_2, -Heating, -Heating_QC, -Sale_Condition, -Mas_Vnr_Area, -BsmtFin_SF_1, -Fireplaces, -BsmtFin_SF_2, -Kitchen_AbvGr, -Longitude, -Latitude, -Bsmt_Unf_SF, -Low_Qual_Fin_SF, -Bsmt_Full_Bath, -Bsmt_Half_Bath, -Wood_Deck_SF, -Open_Porch_SF, -Enclosed_Porch, -Three_season_porch, -Screen_Porch, -Pool_Area, -Misc_Val)
+str(housing)
+skim(housing)
+```
+
+
+**Split and test**  
+```{r}
+set.seed(123) 
+housing_split <- initial_split(housing, prop = 0.7, strata = Above_Median) 
+train <- training(housing_split)
+test <- testing(housing_split)
+```
+
+
+**Folds**  
+```{r}
+set.seed(123)
+folds = vfold_cv(train, v = 5)
+```
+
+
+**Recipe**  
+```{r}
+housing_recipe <- recipe(Above_Median ~., train)
+
+ctrl_grid <- control_stack_grid() 
+ctrl_res <- control_stack_resamples()
+```
+
+### Tree Model
+```{r}
+tree_model <- decision_tree(cost_complexity = tune()) %>% 
+  set_engine("rpart", model = TRUE) %>% 
+  set_mode("classification")
+
+tree_recipe <- housing_recipe %>%
+  step_dummy(all_nominal(),-all_outcomes())
+
+tree_workflow <- workflow() %>%
+  add_model(tree_model) %>%
+  add_recipe(tree_recipe)
+
+set.seed(1234)
+tree_res = 
+  tree_workflow %>% 
+  tune_grid(
+    resamples = folds,
+    grid = 25, 
+    control = ctrl_grid
+    )
+```
+
+
+### Random Forest
+```{r}
+# rf_recipe <- tree_recipe %>%
+#    step_dummy(all_nominal(), -all_outcomes())
+# 
+# rf_model <- rand_forest(mtry = tune(), min_n = tune(), trees = 200) %>%
+#   set_engine("ranger", importance = "permutation") %>%
+#   set_mode("classification")
+# 
+#  rf_wflow <-
+#    workflow() %>%
+#    add_model(rf_model) %>%
+#    add_recipe(rf_recipe)
+# 
+#  set.seed(1234)
+#  rf_res <- tune_grid(
+#    rf_wflow,
+#    resamples = folds,
+#    grid = 200,
+#    control = ctrl_grid
+# )
+```
+
+```{r}
+#saveRDS(rf_res,"rf_res.rds")
+```
+
+
+```{r}
+rf_res <- readRDS("rf_res.rds")
+```
+
+
+### Neural Network Model
+```{r}
+ # nn_recipe <- housing_recipe %>%
+ #   step_normalize(all_predictors(), -all_nominal())
+ # 
+ # nn_model <-
+ #   mlp(hidden_units = tune(), penalty = tune(),
+ #       epochs = tune()) %>%
+ #   set_mode("classification") %>%
+ #   set_engine("nnet", verbose = 0)
+ # 
+ # nn_workflow <-
+ #   workflow() %>%
+ #   add_recipe(nn_recipe) %>%
+ #   add_model(nn_model)
+ # 
+ # set.seed(1234)
+ # neural_res <-
+ #   tune_grid(nn_workflow,
+ #             resamples = folds,
+ #             grid = 25,
+ #             control = ctrl_grid)
+```
+
+```{r}
+# saveRDS(neural_res,"neural_res.rds")
+```
+
+```{r}
+neural_res <- readRDS("neural_res.rds")
+
+## this neural network is from the "C.Clark_Course_Project2" project
+```
+
+```{r}
+neural_res %>%
+  collect_metrics() %>%
+  filter(.metric == "accuracy") %>%
+  mutate(hidden_units = factor(hidden_units)) %>%
+  ggplot(aes(penalty, mean, color = epochs)) +
+  geom_line(alpha = 0.5, size = 1.5) +
+  geom_point() +
+  facet_wrap(~hidden_units, ncol =2 ) + 
+  labs(y = "Accuracy")
+```
+
+### XGB
+```{r}
+tgrid <- expand.grid(
+  trees = 100, 
+  min_n = 1, 
+  tree_depth = c(1,2,3,4), 
+  learn_rate = c(0.01, 0.1, 0.2, 0.3, 0.4), 
+  loss_reduction = 0, 
+  sample_size = c(0.5, 0.8, 1)) 
+
+xgboost_recipe <- 
+  recipe(formula = Above_Median ~ ., data = train) %>% 
+  #step_novel(all_nominal(), -all_outcomes()) %>% 
+  step_dummy(all_nominal(), -all_outcomes(), one_hot = TRUE) %>% 
+  step_zv(all_predictors()) 
+
+xgboost_spec <- 
+  boost_tree(trees = tune(), min_n = tune(), tree_depth = tune(), learn_rate = tune(), 
+    loss_reduction = tune(), sample_size = tune()) %>% 
+  set_mode("classification") %>% 
+  set_engine("xgboost") 
+
+xgboost_workflow <- 
+  workflow() %>% 
+  add_recipe(xgboost_recipe) %>% 
+  add_model(xgboost_spec) 
+
+set.seed(1234)
+xgb_res <-
+  tune_grid(xgboost_workflow, 
+            resamples = folds, 
+            grid = tgrid,
+            control = ctrl_grid)
+```
+
+### Stacking
+```{r}
+housing_stacks <- stacks() %>%
+  add_candidates(tree_res) %>%
+  add_candidates(rf_res) %>% 
+  #add_candidates(neural_res) %>%
+  add_candidates(xgb_res)
+```
+
+```{r}
+housing_blend <-  
+  housing_stacks %>% 
+  blend_predictions(metric = metric_set(accuracy))
+```
+
+```{r}
+autoplot(housing_blend, type = "weights")
+```
+
+```{r}
+housing_blend <-
+  housing_blend %>%
+  fit_members()
+```
+
+Predictions  
+```{r}
+trainpredstack <- predict(housing_blend, train)
+head(trainpredstack)
+```
+
+Confusion matrix
+```{r}
+confusionMatrix(trainpredstack$.pred_class, train$Above_Median, 
+                positive = "Yes")
+```
+
+Predictions  
+```{r}
+testpredstack <- predict(housing_blend, test)
+head(testpredstack)
+```
+
+Confusion matrix
+```{r}
+confusionMatrix(testpredstack$.pred_class, test$Above_Median, 
+                positive = "Yes")
+```
+
+### Competition SET
+```{r}
+housing_competition <- read_csv("ames_competition.csv")
+housing_competition <- housing_competition %>% mutate_if(is.character, as_factor)
+
+trainpredstack2 <- predict(housing_blend, housing_competition)
+#trainpredstack2
+```
+
+
+```{r}
+kaggle <- housing_competition$X1 #creating a data frame with just the ID number from competition
+
+kaggle <- bind_cols(kaggle, trainpredstack2) #here, you would put your predictions object, not df1!!
+
+kaggle
+  
+```
+
+Now we can write this dataframe out to a CSV file. This is file that you submit to Kaggle.  
+```{r}
+write.csv(kaggle, "kaggle_submit.csv", row.names=FALSE)
+```
